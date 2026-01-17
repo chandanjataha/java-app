@@ -1,0 +1,84 @@
+# ============================================
+# Enterprise Java CI/CD Pipeline
+# Build: Maven
+# Deploy: Apache Tomcat 10 (VM)
+# Artifact: WAR
+# ============================================
+
+trigger: none   # Manual / Release-driven (Enterprise standard)
+
+pool:
+  name: Default  # Self-hosted / Microsoft-hosted agent
+
+# -------------------------
+# BUILD STAGE
+# -------------------------
+stages:
+- stage: Build
+  displayName: Build_Java_Application
+  jobs:
+  - job: buildjava
+    displayName: Maven_Build
+    steps:
+
+    # Maven build & unit test execution
+    - task: PowerShell@2
+      displayName: Maven_Clean_Package
+      inputs:
+        targetType: 'inline'
+        script: 'mvn clean package'
+
+    # Publish WAR as pipeline artifact
+    - task: PublishPipelineArtifact@1
+      displayName: Publish_WAR_Artifact
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/target/JavaLoginShowcase-1.0.0.war'
+        artifact: 'javaartifacts'
+        publishLocation: 'pipeline'
+
+# -------------------------
+# DEPLOY STAGE
+# -------------------------
+- stage: Deploy
+  displayName: Deploy_To_Tomcat
+  dependsOn: Build
+  condition: succeeded()
+
+  jobs:
+  - deployment: deployjava
+    displayName: Deploy_Java_Login_App
+    environment: 'java vm'   # Enables approvals, history, rollback
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          # Download build artifact
+          - task: DownloadPipelineArtifact@2
+            displayName: Download_Build_Artifact
+            inputs:
+              buildType: 'current'
+              artifactName: 'javaartifacts'
+              targetPath: '$(Pipeline.Workspace)'
+
+          # Copy WAR to target VM
+          - task: CopyFilesOverSSH@0
+            displayName: Copy_WAR_To_VM
+            inputs:
+              sshEndpoint: 'javassh-sc'
+              sourceFolder: '$(Pipeline.Workspace)/javaartifacts'
+              contents: '**'
+              targetFolder: '/home/vmuser'
+              readyTimeout: '20000'
+
+          # Deploy WAR to Tomcat & restart service
+          - task: SSH@0
+            displayName: Deploy_To_Tomcat10
+            inputs:
+              sshEndpoint: 'javassh-sc'
+              runOptions: 'inline'
+              inline: |
+                sudo cp -r /home/vmuser/*.war /var/lib/tomcat10/webapps/
+                sudo chmod 777 /var/lib/tomcat10/webapps/*.war
+                sudo systemctl restart tomcat10
+              readyTimeout: '20000'
